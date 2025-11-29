@@ -10,10 +10,30 @@ import seaborn as sns
 import plotly.express as px
 import os
 # import process_functions as func  # <- plug in later if needed
+from auth import login_screen
 
-# --------------------------
-# Config / Inputs
-# --------------------------
+# if "authenticated" not in st.session_state:
+#     st.session_state["authenticated"] = False
+
+# if "username" not in st.session_state:
+#     st.session_state["username"] = None
+
+
+# # --- AUTHENTICATION GATE ---
+# if not st.session_state["authenticated"]:
+#     login_screen()
+#     st.stop()
+
+
+# st.sidebar.success(f"Logged in as: {st.session_state['username']}")
+
+# # Logout button
+# if st.sidebar.button("Logout"):
+#     st.session_state["authenticated"] = False
+#     st.session_state["username"] = None
+#     st.rerun()
+
+
 st.set_page_config(page_title="Stocks & Sectors Analysis", layout='wide', initial_sidebar_state='expanded')
 st.title("📈 Stocks & Sectors Analysis")
 
@@ -27,10 +47,10 @@ TICKER_COL = 'SYMBOL' if 'SYMBOL' in symbols_data.columns else ('NSE CODE' if 'N
 if TICKER_COL is None:
     st.stop()  # fail fast with message
 symbols_data[TICKER_COL] = symbols_data[TICKER_COL].astype(str).str.replace(':', '.')  # normalize
-df = symbols_data.head(200).copy().set_index(TICKER_COL)
+df = symbols_data.copy().set_index(TICKER_COL)
 
 # Dates & week labels (keep as you provided)
-dates = ["2024-12-30","2025-02-05","2025-01-27","2025-01-02","2024-12-20","2024-12-05","2024-11-21","2024-11-07","2024-12-17","2024-12-24"]
+dates = ["2025-01-30","2025-02-05","2025-01-27","2025-01-02","2025-02-20","2025-03-05","2025-04-21","2025-05-07","2025-06-17","2025-08-24"]
 weeks = ['base','Week 1','Week 2','Week 3','Week 4','Week 5','Week 6','Week 7','Week 8','Week 9']
 
 # Convert to pd.Timestamp once
@@ -46,7 +66,7 @@ def chunk_batch(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
 
-def safe_fetch(symbol: str, period: str = '1y', attempts: int = 3) -> pd.DataFrame:
+def safe_fetch(symbol: str, period: str = '1y', attempts: int = 2) -> pd.DataFrame:
     for attempt in range(attempts):
         try:
             hist = yf.Ticker(symbol).history(period=period, auto_adjust=False)
@@ -123,18 +143,18 @@ def merge_results(df_in: pd.DataFrame, fetched_list):
 # --------------------------
 
 
-fetch_tab, tab_2, tab_3, tab_4, tab_5 = st.tabs(
+tab_1, tab_2, tab_3, tab_4, tab_5 = st.tabs(
     ["Fetch","Top Sectors","Histogram", "Volatility", "Sectors Ranking"]
 )
 
 
-with fetch_tab:
+with tab_1:
     st.subheader("Fetch data here")
 
     c1, c2, c3 = st.columns(3)
 
     period = c1.selectbox("yfinance period", ["6mo","1y","2y","5y"], index=1)
-    batch_size = c2.slider("Batch size", 5, 100, 25, step=5)
+    batch_size = c2.slider("Batch size", 25, 100, 50, step=10)
     max_workers = c3.slider("Max workers (threads)", 1, 32, 10)
 
     with st.expander("Preview tickers"):
@@ -161,9 +181,7 @@ with fetch_tab:
         st.success(f"Completed in {secs:.1f}s — added/updated columns: "
                 f"{sum(c in merged.columns for c in (['Current'] + weeks))}")
 
-    # --------------------------
-    # Results + Download
-    # --------------------------
+
     if st.session_state["result_df"] is not None:
         st.subheader("Results")
         st.dataframe(st.session_state["result_df"].sort_index())
@@ -456,10 +474,9 @@ def get_improved_sectors(df: pd.DataFrame) -> list[str]:
     return tmp.loc[condition, "Sector"].dropna().unique().tolist()
 
 
-def map_improved_stocks(unprocessed_df: pd.DataFrame,
-                        improved_secs: list[str]) -> dict[str, list[str]]:
+def map_stocks(unprocessed_df: pd.DataFrame,sectors: list[str]) -> dict[str, list[str]]:
     """For each improved sector, list stocks with Live >= sector's average Live."""
-    if unprocessed_df is None or unprocessed_df.empty or not improved_secs:
+    if unprocessed_df is None or unprocessed_df.empty or not sectors:
         return {}
 
     df = unprocessed_df.copy()
@@ -467,13 +484,12 @@ def map_improved_stocks(unprocessed_df: pd.DataFrame,
     code_col = "NSE CODE" if "NSE CODE" in df.columns else ("SYMBOL" if "SYMBOL" in df.columns else None)
     if not sec_col or not code_col or "Live" not in df.columns:
         return {}
-
     df["Live"] = pd.to_numeric(df["Live"], errors="coerce")
     df = df.dropna(subset=["Live"])
     avg_live = df.groupby(sec_col)["Live"].mean()
 
     out: dict[str, list[str]] = {}
-    for sec in improved_secs:
+    for sec in sectors:
         if sec in avg_live.index:
             thr = avg_live.loc[sec]
             stocks = (
@@ -486,14 +502,14 @@ def map_improved_stocks(unprocessed_df: pd.DataFrame,
 with tab_5:
     
     rank_tab, stocks_tab = st.tabs(["Rank Sectors", "Top Stocks"])
+
+    base_rows = st.session_state.get("process_data")
     with rank_tab:
         st.subheader("Rank Analysis")
-
         if "top_live" not in st.session_state or st.session_state["top_live"] is None or st.session_state["top_live"].empty:
             st.warning("Perform top sectors analysis first (Tab 2).")
         else:
             top_live_data = st.session_state["top_live"].copy()
-
             # Rank only Live columns that exist
             rank_cols_all = ['Live'] + [f'Live {i}' for i in range(1, 10)]
             rank_cols = [c for c in rank_cols_all if c in top_live_data.columns]
@@ -518,7 +534,7 @@ with tab_5:
             if base_rows is None or (isinstance(base_rows, pd.DataFrame) and base_rows.empty):
                 st.info("Raw row-level data not available (process_data). Skipping improved stocks list.")
             else:
-                improved_map = map_improved_stocks(base_rows, improved_secs)
+                improved_map = map_stocks(base_rows, improved_secs)
                 st.session_state["improved_stocks"] = improved_map
 
                 # Summary table (sector → count + preview of tickers)
@@ -556,5 +572,43 @@ with tab_5:
                         )
                 else:
                     st.info("No sectors met the improvement rule (Week 1 or 2 ≥ 2% above base).")
+
+    with stocks_tab:
+        st.subheader("Top Sector Stocks")
+
+        if "top_live" not in st.session_state or st.session_state["top_live"] is None or st.session_state["top_live"].empty:
+            st.warning("Perform top sectors analysis first (Tab 2).")
+        else:
+            top_live_data = st.session_state["top_live"].copy()
+            base_rows = st.session_state.get("process_data")
+
+            if base_rows is None or (isinstance(base_rows, pd.DataFrame) and base_rows.empty):
+                st.info("Raw row-level data not available (process_data). Skipping improved stocks list.")
+            else:
+                stocks_map = map_stocks(base_rows, list(top_live_data["Sector"]))
+
+                st.session_state["top_stocks"] = stocks_map
+
+                # Summary table
+                rows = [{
+                    "Sector": sec,
+                    "Stocks Count": len(stocks_map.get(sec, [])),
+                    "Stocks (preview)": ", ".join(stocks_map.get(sec, [])[:5])
+                } for sec in top_live_data["Sector"]]
+
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+                # Expanders
+                for sec in top_live_data["Sector"]:
+                    tickers = stocks_map.get(sec, [])
+                    with st.expander(f"{sec} — {len(tickers)} stocks"):
+                        if not tickers:
+                            st.write("None")
+                        else:
+                            cols = st.columns(6)
+                            for i, t in enumerate(tickers):
+                                cols[i % 6].markdown(f"`{t}`")
+                #st.dataframe(pd.DataFrame(top_live_data), use_container_width=True)
+        
 
 
